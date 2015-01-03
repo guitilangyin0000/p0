@@ -113,7 +113,8 @@ func (mes *multiEchoServer) handleClientMap() {
 			count <- len(mes.conns)
 		case receiveStr := <-mes.readClientChan:
 			for _, message := range mes.messages {
-				// 不太懂一个channel 的len是什么，若小于100，则向该通道传输读到的数据
+				// len(message) 因为message 的类型是chan string，则意思是现在通道中的string小于100
+                                // 若小于100，则向该通道传输读到的数据
 				if len(message) < 100 {
 					message <- receiveStr
 				}
