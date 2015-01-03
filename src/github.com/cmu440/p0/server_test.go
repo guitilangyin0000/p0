@@ -1,5 +1,3 @@
-// Official tests for a MultiEchoServer implementation.
-
 package p0
 
 import (
@@ -70,7 +68,6 @@ func (ts *testSystem) startServer(numTries int) error {
 	var err error
 	for i := 0; i < numTries; i++ {
 		ts.server = New()
-		fmt.Println("new start a server")
 		if ts.server == nil {
 			return errors.New("server returned by New() must not be nil")
 		}
@@ -295,6 +292,7 @@ func testBasic(t *testing.T, name string, numClients, numMessages, timeout int) 
 		return
 	}
 	defer ts.server.Close()
+
 	if err := ts.checkCount(0); err != nil {
 		t.Error(err)
 		return
@@ -308,8 +306,8 @@ func testBasic(t *testing.T, name string, numClients, numMessages, timeout int) 
 	defer ts.killClients(allClients...)
 
 	// Give the server some time to register the clients before running the test.
-	//time.Sleep(time.Duration(defaultStartDelay) * time.Millisecond)
-	time.Sleep(time.Duration(100) * time.Nanosecond)
+	time.Sleep(time.Duration(defaultStartDelay) * time.Millisecond)
+
 	if err := ts.checkCount(numClients); err != nil {
 		t.Error(err)
 		return

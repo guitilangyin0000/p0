@@ -1,133 +1,133 @@
-// Implementation of a MultiEchoServer. Students should write their code in this file.
-
 package p0
 
 import (
 	"bufio"
+	"fmt"
 	"net"
 	"strconv"
 )
 
 type multiEchoServer struct {
-	// TODO: implement this!
-	conns            map[string]net.Conn
-	messages         map[string]chan string
-	readClientChan   chan string
-	addClientChan    chan net.Conn
-	removeClientChan chan net.Conn
-	countClientChan  chan chan int
-	closeChan        chan int
+	ln               net.Listener
+	clients          map[string]*multiEchoClient
+	addClientChan    chan *multiEchoClient
+	removeClientChan chan *multiEchoClient
+	readChan         chan []byte
+	closeChan        chan bool
+	countRequestChan chan chan int
+}
+
+type multiEchoClient struct {
+	conn      net.Conn
+	writeChan chan []byte
+	closeChan chan bool
 }
 
 // New creates and returns (but does not start) a new MultiEchoServer.
 func New() MultiEchoServer {
-	// TODO: implement this!
-	conns := make(map[string]net.Conn, 1)
-	messages := make(map[string]chan string, 1)
-	readClientChan := make(chan string, 1)
-	addClientChan := make(chan net.Conn, 1)
-	removeClientChan := make(chan net.Conn, 1)
-	countClientChan := make(chan chan int, 1)
-	closeChan := make(chan int, 1)
-	return &multiEchoServer{conns, messages, readClientChan, addClientChan,
-		removeClientChan, countClientChan, closeChan}
+	mes := new(multiEchoServer)
+	mes.clients = make(map[string]*multiEchoClient)
+	mes.addClientChan = make(chan *multiEchoClient)
+	mes.removeClientChan = make(chan *multiEchoClient)
+	mes.readChan = make(chan []byte)
+	mes.closeChan = make(chan bool)
+	mes.countRequestChan = make(chan chan int)
+	return mes
 }
 
 func (mes *multiEchoServer) Start(port int) error {
-	// TODO: implement this!
-	listener, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
-	go mes.handleListener(listener)
+	fmt.Println("Start listening.")
+	ln, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+	if err != nil {
+		return err
+	}
+	mes.ln = ln
+	go mes.serverRoutine()
 	return err
 }
 
 func (mes *multiEchoServer) Close() {
-	// TODO: implement this!
-	mes.closeChan <- 1
+	mes.closeChan <- true
+	mes.ln.Close()
 }
 
 func (mes *multiEchoServer) Count() int {
-	// TODO: implement this!
-	countChan := make(chan int, 1)
-	mes.countClientChan <- countChan
+	countChan := make(chan int)
+	mes.countRequestChan <- countChan
 	return <-countChan
 }
 
-func (mes *multiEchoServer) handleListener(listener net.Listener) {
-	//go mes.handleClientMap(mes.conns, mes.messages, mes.addClientChan, mes.removeClientChan,
-	//	mes.readClientChan, mes.countClientChan, mes.closeChan)
-	go mes.handleClientMap()
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			//fmt.Printf("listenner accept error\n")
-			break
-		} else {
-			mes.addClientChan <- conn
-			go mes.handleConnRead(conn)
-		}
-	}
-}
+func (mes *multiEchoServer) serverRoutine() {
+	go mes.handleAccept(mes.ln)
 
-func (mes *multiEchoServer) handleConnRead(conn net.Conn) {
-	reader := bufio.NewReader(conn)
-	// message包括\n
-	for {
-		message, err := reader.ReadBytes('\n')
-		if err != nil {
-			conn.Close()
-			mes.removeClientChan <- conn
-			break
-		}
-		receiveStr := string(message)
-		mes.readClientChan <- receiveStr
-	}
-}
-
-func (mes *multiEchoServer) handleConnWrite(conn net.Conn, message chan string) {
-	for {
-		msg := <-message
-		_, err := conn.Write([]byte(msg))
-		if err != nil {
-			// 感觉有问题，好像不符合要求。要求是如果客户端读的很慢，将buffer写满了，则写
-			// 到一个queue里面，queue最多存放100条message，超出则丢弃
-			conn.Close()
-			mes.removeClientChan <- conn
-		}
-	}
-}
-
-func (mes *multiEchoServer) handleClientMap() {
 	for {
 		select {
-		case conn := <-mes.addClientChan:
-			mes.conns[conn.RemoteAddr().String()] = conn
-			// 下面这句的意思是生成能容下100条string的channel
-			message := make(chan string, 100)
-			mes.messages[conn.RemoteAddr().String()] = message
-			go mes.handleConnWrite(conn, message)
-		case conn := <-mes.removeClientChan:
-			key := conn.RemoteAddr().String()
-			delete(mes.conns, key)
-			delete(mes.messages, key)
-		case count := <-mes.countClientChan:
-			count <- len(mes.conns)
-		case receiveStr := <-mes.readClientChan:
-			for _, message := range mes.messages {
-				// len(message) 因为message 的类型是chan string，则意思是现在通道中的string小于100
-                                // 若小于100，则向该通道传输读到的数据
-				if len(message) < 100 {
-					message <- receiveStr
+		case line := <-mes.readChan:
+			// 给所有的客户端发信息
+			for _, client := range mes.clients {
+				if len(client.writeChan) < 100 {
+					client.writeChan <- line
 				}
 			}
-		case value := <-mes.closeChan:
-			value = value
-			for _, conn := range mes.conns {
-				conn.Close()
-				mes.removeClientChan <- conn
+		case client := <-mes.addClientChan:
+			mes.clients[client.conn.RemoteAddr().String()] = client
+			go client.clientRoutine(mes)
+			go mes.handleRead(client)
+		case client := <-mes.removeClientChan:
+			client.closeChan <- true
+			delete(mes.clients, client.conn.RemoteAddr().String())
+		case countChan := <-mes.countRequestChan:
+			countChan <- len(mes.clients)
+		case <-mes.closeChan:
+			for _, client := range mes.clients {
+				client.closeChan <- true
+				delete(mes.clients, client.conn.RemoteAddr().String())
 			}
-			break
+			return
 		}
 	}
 }
 
-// TODO: add additional methods/functions below!
+func (mes *multiEchoServer) handleAccept(ln net.Listener) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		client := new(multiEchoClient)
+		client.conn = conn
+		client.writeChan = make(chan []byte, 100)
+		client.closeChan = make(chan bool)
+		mes.addClientChan <- client
+	}
+}
+
+func (mes *multiEchoServer) handleRead(client *multiEchoClient) {
+	reader := bufio.NewReader(client.conn)
+
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			mes.removeClientChan <- client
+			return
+		}
+
+		mes.readChan <- line
+	}
+}
+
+func (client *multiEchoClient) clientRoutine(mes *multiEchoServer) {
+	for {
+		select {
+		case line := <-client.writeChan:
+			_, err := client.conn.Write(line)
+			if err != nil {
+				mes.removeClientChan <- client
+				return
+			}
+		case <-client.closeChan:
+			client.conn.Close()
+			return
+		}
+	}
+}
