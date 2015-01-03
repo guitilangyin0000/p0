@@ -35,7 +35,7 @@ func New() MultiEchoServer {
 
 func (mes *multiEchoServer) Start(port int) error {
 	// TODO: implement this!
-	listener, err := net.Listen("tcp", ":"+strconv.Itoa(port))
+	listener, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
 	go mes.handleListener(listener)
 	return err
 }
@@ -68,19 +68,6 @@ func (mes *multiEchoServer) handleListener(listener net.Listener) {
 	}
 }
 
-func (mes *multiEchoServer) handleConnWrite(conn net.Conn, message chan string) {
-	for {
-		msg := <-message
-		_, err := conn.Write([]byte(msg))
-		if err != nil {
-			// 感觉有问题，好像不符合要求。要求是如果客户端读的很慢，将buffer写满了，则写
-			// 到一个queue里面，queue最多存放100条message，超出则丢弃
-			conn.Close()
-			mes.removeClientChan <- conn
-		}
-	}
-}
-
 func (mes *multiEchoServer) handleConnRead(conn net.Conn) {
 	reader := bufio.NewReader(conn)
 	// message包括\n
@@ -93,6 +80,19 @@ func (mes *multiEchoServer) handleConnRead(conn net.Conn) {
 		}
 		receiveStr := string(message)
 		mes.readClientChan <- receiveStr
+	}
+}
+
+func (mes *multiEchoServer) handleConnWrite(conn net.Conn, message chan string) {
+	for {
+		msg := <-message
+		_, err := conn.Write([]byte(msg))
+		if err != nil {
+			// 感觉有问题，好像不符合要求。要求是如果客户端读的很慢，将buffer写满了，则写
+			// 到一个queue里面，queue最多存放100条message，超出则丢弃
+			conn.Close()
+			mes.removeClientChan <- conn
+		}
 	}
 }
 
@@ -113,7 +113,7 @@ func (mes *multiEchoServer) handleClientMap() {
 			count <- len(mes.conns)
 		case receiveStr := <-mes.readClientChan:
 			for _, message := range mes.messages {
-				// 不太懂一个channel 的len是什么
+				// 不太懂一个channel 的len是什么，若小于100，则向该通道传输读到的数据
 				if len(message) < 100 {
 					message <- receiveStr
 				}
